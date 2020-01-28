@@ -279,6 +279,20 @@ def _limit_rational(val, max_val):
     return n_d[::-1] if inv else n_d
 
 
+def _limit_signed_rational(val, max_val, min_val):
+    frac = Fraction(val)
+    n_d = frac.numerator, frac.denominator
+
+    if min(n_d) < min_val:
+        n_d = _limit_rational(val, abs(min_val))
+
+    if max(n_d) > max_val:
+        val = Fraction(*n_d)
+        n_d = _limit_rational(val, max_val)
+
+    return n_d
+
+
 def _libtiff_version():
     return Image.core.libtiff_version.split("\n")[0].split("Version ")[1]
 
@@ -553,12 +567,22 @@ class ImageFileDirectory_v2(MutableMapping):
             else:
                 self.tagtype[tag] = TiffTags.UNDEFINED
                 if all(isinstance(v, IFDRational) for v in values):
-                    self.tagtype[tag] = TiffTags.RATIONAL
+                    self.tagtype[tag] = (
+                        TiffTags.RATIONAL
+                        if all(v >= 0 for v in values)
+                        else TiffTags.SIGNED_RATIONAL
+                    )
                 elif all(isinstance(v, int) for v in values):
-                    if all(v < 2 ** 16 for v in values):
+                    if all(0 <= v < 2 ** 16 for v in values):
                         self.tagtype[tag] = TiffTags.SHORT
+                    elif all(-(2 ** 15) < v < 2 ** 15 for v in values):
+                        self.tagtype[tag] = TiffTags.SIGNED_SHORT
                     else:
-                        self.tagtype[tag] = TiffTags.LONG
+                        self.tagtype[tag] = (
+                            TiffTags.LONG
+                            if all(v >= 0 for v in values)
+                            else TiffTags.SIGNED_LONG
+                        )
                 elif all(isinstance(v, float) for v in values):
                     self.tagtype[tag] = TiffTags.DOUBLE
                 else:
@@ -705,7 +729,7 @@ class ImageFileDirectory_v2(MutableMapping):
     @_register_writer(5)
     def write_rational(self, *values):
         return b"".join(
-            self._pack("2L", *_limit_rational(frac, 2 ** 31)) for frac in values
+            self._pack("2L", *_limit_rational(frac, 2 ** 32 - 1)) for frac in values
         )
 
     @_register_loader(7, 1)
@@ -728,7 +752,8 @@ class ImageFileDirectory_v2(MutableMapping):
     @_register_writer(10)
     def write_signed_rational(self, *values):
         return b"".join(
-            self._pack("2L", *_limit_rational(frac, 2 ** 30)) for frac in values
+            self._pack("2l", *_limit_signed_rational(frac, 2 ** 31 - 1, -(2 ** 31)))
+            for frac in values
         )
 
     def _ensure_read(self, fp, size):
